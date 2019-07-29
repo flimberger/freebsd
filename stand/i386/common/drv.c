@@ -49,9 +49,37 @@ drvsize(struct dsk *dskp)
 
 static struct edd_packet packet;
 
+#ifndef USE_XREAD
+static char bounce_buffer[512];
+
+static int drvread_one(struct dsk *, void *, daddr_t, unsigned);
+#endif
+
 int
 drvread(struct dsk *dskp, void *buf, daddr_t lba, unsigned nblk)
 {
+#ifndef USE_XREAD
+	int i;
+
+	/* If the buffer is below 1MB, pass it through directly. */
+	if (VTOP((char *)buf + nblk * 512) >> 20 == 0)
+		return (drvread_one(dskp, buf, lba, nblk));
+
+	/*
+	 * Use the bouncer buffer to transfer the data one sector at a time.
+	 */
+	for (i = 0; i < nblk; i++) {
+		if (drvread_one(dskp, bounce_buffer, lba + i, 1) < 0)
+			return (-1);
+		memcpy((char *)buf + 512 * i, bounce_buffer, 512);
+	}
+	return (0);
+}
+
+static int
+drvread_one(struct dsk *dskp, void *buf, daddr_t lba, unsigned nblk)
+{
+#endif
 	static unsigned c = 0x2d5c7c2f;
 
 	if (!OPT_CHECK(RBX_QUIET))
@@ -71,6 +99,9 @@ drvread(struct dsk *dskp, void *buf, daddr_t lba, unsigned nblk)
 	if (V86_CY(v86.efl)) {
 		printf("%s: error %u lba %llu\n",
 		    BOOTPROG, v86.eax >> 8 & 0xff, lba);
+		if ((v86.eax >> 8 & 0xff) == 0x1)
+			printf("    drv %x count %u to %x:%x\n", dskp->drive,
+			    nblk, VTOPSEG(buf), VTOPOFF(buf));
 		return (-1);
 	}
 	return (0);
