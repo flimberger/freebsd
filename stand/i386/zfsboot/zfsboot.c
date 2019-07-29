@@ -529,7 +529,7 @@ ldi_get_size(void *priv)
 	return (size * DEV_BSIZE);
 }
 
-static void
+static int
 probe_drive(struct zfsdsk *zdsk)
 {
 #ifdef GPT
@@ -550,7 +550,7 @@ probe_drive(struct zfsdsk *zdsk)
      * If we find a vdev on the whole disk, stop here.
      */
     if (vdev_probe(vdev_read2, zdsk, NULL) == 0)
-	return;
+	return (0);
 
 #ifdef LOADER_GELI_SUPPORT
     /*
@@ -568,7 +568,7 @@ probe_drive(struct zfsdsk *zdsk)
 	if (geli_havekey(zdsk->gdev) == 0 || 
 	    geli_passphrase(zdsk->gdev, gelipw) == 0) {
 	    if (vdev_probe(vdev_read2, zdsk, NULL) == 0) {
-		return;
+		return (0);
 	    }
 	}
     }
@@ -582,7 +582,7 @@ probe_drive(struct zfsdsk *zdsk)
      * First check for GPT.
      */
     if (drvread(&zdsk->dsk, sec, 1, 1)) {
-	return;
+	return (1);
     }
     memcpy(&hdr, sec, sizeof(hdr));
     if (memcmp(hdr.hdr_sig, GPT_HDR_SIG, sizeof(hdr.hdr_sig)) != 0 ||
@@ -605,7 +605,7 @@ probe_drive(struct zfsdsk *zdsk)
     while (slba < elba) {
 	zdsk->dsk.start = 0;
 	if (drvread(&zdsk->dsk, sec, slba, 1))
-	    return;
+	    return (1);
 	for (part = 0; part < entries_per_sec; part++) {
 	    ent = (struct gpt_ent *)(sec + part * hdr.hdr_entsz);
 	    if (memcmp(&ent->ent_type, &freebsd_zfs_uuid,
@@ -645,12 +645,12 @@ probe_drive(struct zfsdsk *zdsk)
 	}
 	slba++;
     }
-    return;
+    return (0);
 trymbr:
 #endif /* GPT */
 
     if (drvread(&zdsk->dsk, sec, DOSBBSECTOR, 1))
-	return;
+	return (1);
     dp = (void *)(sec + DOSPARTOFF);
 
     for (i = 0; i < NDOSPART; i++) {
@@ -682,6 +682,8 @@ trymbr:
 	}
 #endif /* LOADER_GELI_SUPPORT */
     }
+
+    return (0);
 }
 
 int
@@ -690,7 +692,7 @@ main(void)
     dnode_phys_t dn;
     off_t off;
     struct zfsdsk *zdsk;
-    int autoboot, i;
+    int autoboot, i, err;
     int nextboot;
     int rc;
 
@@ -736,7 +738,7 @@ main(void)
      * Probe the boot drive first - we will try to boot from whatever
      * pool we find on that drive.
      */
-    probe_drive(zdsk);
+    err = probe_drive(zdsk);
 
     /*
      * Probe the rest of the drives that the bios knows about. This
@@ -749,7 +751,8 @@ main(void)
     for (i = 0; i < MAXBDDEV; i++)
 #endif
     {
-	if ((i | DRV_HARD) == *(uint8_t *)PTOV(ARGS))
+	/* Only skip the boot drive if reading from it did not fail */
+	if (err == 0 && (i | DRV_HARD) == *(uint8_t *)PTOV(ARGS))
 	    continue;
 
 	if (!int13probe(i | DRV_HARD))
